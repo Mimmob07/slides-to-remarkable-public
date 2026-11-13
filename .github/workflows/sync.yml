@@ -1,0 +1,126 @@
+name: Sync slides to reMarkable
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: Command to run
+        required: true
+        type: choice
+        default: sync
+        options:
+          - sync
+          - sync --dry-run
+          - sync --baseline
+          - sync --latest
+          - sync --once-a-day
+          - list
+          - fetch
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: ${{ github.event.repository.private == true }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      ARGS: ${{ inputs.command || 'sync --once-a-day' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Read configured layout mode
+        id: config
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import tomllib
+          from pathlib import Path
+          config = tomllib.loads(Path("config.toml").read_text())
+          print("layout_mode=" + config.get("layout", {}).get("mode", "circuits"))
+          PY
+      - name: Check required secrets
+        env:
+          CANVAS_TOKEN: ${{ secrets.CANVAS_TOKEN }}
+          CANVAS_REFRESH_TOKEN: ${{ secrets.CANVAS_REFRESH_TOKEN }}
+          CANVAS_CLIENT_ID: ${{ secrets.CANVAS_CLIENT_ID }}
+          CANVAS_CLIENT_SECRET: ${{ secrets.CANVAS_CLIENT_SECRET }}
+          RMAPI_SECRET: ${{ secrets.RMAPI_CONFIG }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          LAYOUT_MODE: ${{ steps.config.outputs.layout_mode }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$RMAPI_SECRET" ]]; then
+            echo "Missing required secret: RMAPI_CONFIG (rmapi config file contents)." >&2
+            exit 1
+          fi
+          if [[ -z "$CANVAS_TOKEN" && ( -z "$CANVAS_REFRESH_TOKEN" || -z "$CANVAS_CLIENT_ID" || -z "$CANVAS_CLIENT_SECRET" ) ]]; then
+            echo "Set CANVAS_TOKEN or all three secrets: CANVAS_REFRESH_TOKEN, CANVAS_CLIENT_ID, and CANVAS_CLIENT_SECRET." >&2
+            exit 1
+          fi
+          if [[ "$LAYOUT_MODE" == "circuits" && -z "$CLAUDE_CODE_OAUTH_TOKEN" ]]; then
+            echo "The circuits layout requires the CLAUDE_CODE_OAUTH_TOKEN secret." >&2
+            exit 1
+          fi
+      - name: Install system tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y curl libreoffice-impress
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Install rmapi v0.0.35
+        run: |
+          curl --fail --location --silent --show-error \
+            https://github.com/ddvk/rmapi/releases/download/v0.0.35/rmapi-linux-amd64.tar.gz \
+            --output "$RUNNER_TEMP/rmapi.tar.gz"
+          tar -xzf "$RUNNER_TEMP/rmapi.tar.gz" -C "$RUNNER_TEMP" rmapi
+          chmod 0755 "$RUNNER_TEMP/rmapi"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Prepare private runtime config
+        env:
+          RMAPI_SECRET: ${{ secrets.RMAPI_CONFIG }}
+        run: |
+          umask 077
+          printf '%s' "$RMAPI_SECRET" > "$RUNNER_TEMP/rmapi.conf"
+          chmod 0600 "$RUNNER_TEMP/rmapi.conf"
+          echo "RMAPI_CONFIG=$RUNNER_TEMP/rmapi.conf" >> "$GITHUB_ENV"
+      - name: Install Claude CLI
+        if: ${{ steps.config.outputs.layout_mode == 'circuits' }}
+        run: npm install --global @anthropic-ai/claude-code
+      - name: Run slides2rm
+        id: run_slides2rm
+        env:
+          CANVAS_TOKEN: ${{ secrets.CANVAS_TOKEN }}
+          CANVAS_REFRESH_TOKEN: ${{ secrets.CANVAS_REFRESH_TOKEN }}
+          CANVAS_CLIENT_ID: ${{ secrets.CANVAS_CLIENT_ID }}
+          CANVAS_CLIENT_SECRET: ${{ secrets.CANVAS_CLIENT_SECRET }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          read -r -a args <<< "$ARGS"
+          python slides2rm.py "${args[@]}"
+      - name: Commit sync state
+        if: ${{ always() && (steps.run_slides2rm.outcome == 'success' || steps.run_slides2rm.outcome == 'failure') }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f state.json ]]; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f state.json
+          if git diff --cached --quiet -- state.json; then
+            exit 0
+          fi
+          git commit -m "Update sync state" --only state.json
+          git push

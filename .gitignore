@@ -1,0 +1,16 @@
+.venv/
+out/
+__pycache__/
+*.tmp
+*.pdf
+*.ppt
+*.pptx
+*.picks.json
+.private/
+.env
+.env.*
+.rmapi
+rmapi.conf
+canvas_token
+state.json
+HANDOFF.md

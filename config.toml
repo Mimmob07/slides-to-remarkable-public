@@ -1,0 +1,26 @@
+[canvas]
+# Your school's Canvas origin (not a particular course URL).
+base_url = "https://canvas.example.edu"
+# Case-insensitive substring of an active course name or course code.
+# Use a specific match: all matching courses share the tablet folder below.
+course_match = "COURSE 101"
+# Regex against "<folder or module>/<file name>"; run `list` to see actual paths.
+include = '^Lectures/'
+# Empty string means exclude nothing.
+exclude = '(?i)annotated|solutions'
+# Enable only if your decks appear in Modules rather than Files.
+modules = false
+# IANA timezone for --once-a-day; change to your lecture timezone.
+timezone = "UTC"
+
+[remarkable]
+# Top-level folder to create/use in your reMarkable cloud account.
+folder = "/COURSE 101"
+
+[layout]
+# notes: every slide with writing space (any subject; no AI required).
+# full: every slide filling a landscape page (no AI required).
+# circuits: extract circuit schematics only (requires Claude Code).
+mode = "notes"
+# dots, lines, or none.
+grid = "dots"
